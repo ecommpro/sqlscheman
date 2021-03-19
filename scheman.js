@@ -18,6 +18,22 @@ const set = (obj, path, value) => {
   }, obj)
 }
 
+const compareColumnDefinition = (current, wanted) => {
+	const wantedColumnType = `${wanted.type}${wanted.length && `(${wanted.length})` || ''}`;
+
+	if (
+		current.columnType !== wantedColumnType
+		|| String(current.columnDefault || 'NULL') !== String(wanted.default == null && 'NULL' || wanted.default)
+	) {
+		//console.log([String(current.columnDefault || 'NULL'), String(wanted.default || 'NULL')]);
+		return false;
+	}
+
+	
+
+	return true;
+}
+
 const emptyFacts = () => ({
 	mustExist: [],
 	mustNotExist: [],
@@ -65,7 +81,7 @@ const keyTypes = { primaryKey: 'primaryKey', key: 'keys', uniqueKey: 'uniqueKeys
 const scheman = ({ connection }) => {
 
 	let _tables, columns, constraints, indexes;
-	let primaryKeys = new Map, keys = new Map, uniqueKeys = new Map, foreignKeys = new Map;
+	let primaryKeys = new Map, keys = new Map, uniqueKeys = new Map, foreignKeys = new Map, objects = new Map;
 
 	let tables = new Map;
 
@@ -81,6 +97,7 @@ const scheman = ({ connection }) => {
 	let blueprint = {
 		createTable: {},
 		addColumn: {},
+		modifyColumn: {},
 	}
 
 	const retrieve = fn => async ({ query, keyFields, ...def }) => (await connection.query(query))
@@ -107,7 +124,12 @@ ${[
 
 		addColumn: ({ tableName, columnName, ...def }) => {
 			return `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${columnDef(def)}`
-		}
+		},
+
+		modifyColumn: ({ tableName, columnName, ...def }) => {
+			return `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`${columnName}\` ${columnDef(def)}`
+		},
+		
 	}
 
 	const fact = Object.keys(facts).reduce((fact, objectType) => ({
@@ -141,6 +163,8 @@ ${[
 			
 			columns.forEach(column => {
 				const { tableName, columnName } = column;
+				const globalId = `${tableName}:${columnName}`;
+				objects.set(`column:${globalId}`, true);
 				tables.get(tableName)['columns'][columnName] = column;
 			});
 
@@ -151,14 +175,17 @@ ${[
 				const globalId = `${def.tableName}:${id}`;
 				
 				if (def.indexName === 'PRIMARY') {
-					tables.get(tableName)['primaryKey'][id] = def;
-					primaryKeys.set(globalId, def);
+					tables.get(tableName)['primaryKey'][id] = index;
+					primaryKeys.set(globalId, index);
+					objects.set(`primaryKey:${globalId}`, true);
 				} else if (def.nonUnique) {
-					tables.get(tableName)['keys'][id] = def;
-					keys.set(globalId, def);
+					tables.get(tableName)['keys'][id] = index;
+					keys.set(globalId, index);
+					objects.set(`key:${globalId}`, true);
 				} else {
-					tables.get(tableName)['uniqueKeys'][id] = def;
-					uniqueKeys.set(globalId, def);
+					tables.get(tableName)['uniqueKeys'][id] = index;
+					uniqueKeys.set(globalId, index);
+					objects.set(`uniqueKey:${globalId}`, true);
 				}
 			});
 
@@ -171,10 +198,11 @@ ${[
 				const globalId = `${def.tableName}:${id}`;
 				tables.get(tableName)['foreignKeys'][id] = constraint;
 				foreignKeys.set(globalId, constraint);
+				objects.set(`foreignKey:${globalId}`, true);
 			});
 
 			return {
-				tables, columns, constraints, indexes, primaryKeys, uniqueKeys, foreignKeys
+				tables, columns, constraints, indexes, primaryKeys, uniqueKeys, foreignKeys, objects
 			}
 		},
 
@@ -222,8 +250,9 @@ ${[
 				
 				if (tableDef) {
 					if (tableDef.columns[columnName]) {
-						// check for differences
-						// set(blueprint, ['modifyColumn', table, columnName], column);
+						if (!compareColumnDefinition(tableDef.columns[columnName], def)) {
+							set(blueprint, ['modifyColumn', tableName, columnName], def);
+						}
 					} else {
 						set(blueprint, ['addColumn', tableName, columnName], def);
 					}
@@ -272,7 +301,13 @@ ${[
 					queries.push(sql.addColumn({ tableName, columnName, ...def }));
 				}
 			}
-			
+
+			for (const [tableName, columns] of Object.entries(blueprint.modifyColumn)) {
+				for (const [columnName, def] of Object.entries(columns)) {
+					queries.push(sql.modifyColumn({ tableName, columnName, ...def }));
+				}
+			}
+
 			return queries;
 		}
 
